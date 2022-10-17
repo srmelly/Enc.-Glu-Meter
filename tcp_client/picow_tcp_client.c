@@ -13,15 +13,19 @@
 #include "lwip/pbuf.h"
 #include "lwip/tcp.h"
 
+#include <stdio.h>
+#include "../X3DH/ed25519/src/ed25519.h"
+#include "../X3DH/sha/rfc6234/sha.h"
+
 #if !defined(TEST_TCP_SERVER_IP)
 #error TEST_TCP_SERVER_IP not defined
 #endif
 
 #define TCP_PORT 4242
 #define DEBUG_printf printf
-#define BUF_SIZE 32
+#define BUF_SIZE 64
 
-#define TEST_ITERATIONS 1
+#define TEST_ITERATIONS 2
 #define POLL_TIME_S 10
 
 #if 0
@@ -53,6 +57,16 @@ typedef struct TCP_CLIENT_T_ {
     bool complete;
     int run_count;
     bool connected;
+    unsigned char alice_id_public_key[32]; //Bob's Identity Public Key
+    unsigned char alice_id_private_key[64]; //Bob's Identity Private Key
+    unsigned char alice_seed[32]; //Seed to generate new keys
+    unsigned char alice_ephemeral_public_key[32]; //Alice public identity key
+    unsigned char alice_ephemeral_private_key[64]; //Alice ephemeral/generated key
+    unsigned char bob_spk_public_key[32];
+    unsigned char bob_id_public_key[32]; //Bob's Signed prekey public
+    unsigned char dh1_alice[32];
+    unsigned char dh2_alice[32];
+    
 } TCP_CLIENT_T;
 
 static err_t tcp_client_close(void *arg) {
@@ -92,7 +106,7 @@ static err_t tcp_client_sent(void *arg, struct tcp_pcb *tpcb, u16_t len) {
     DEBUG_printf("tcp_client_sent %u\n", len);
     state->sent_len += len;
 
-    if (state->sent_len >= BUF_SIZE) {
+    if (state->sent_len <= BUF_SIZE) {//->buffer
 
         state->run_count++;
         if (state->run_count >= TEST_ITERATIONS) {
@@ -133,6 +147,8 @@ static void tcp_client_err(void *arg, err_t err) {
 }
 
 err_t tcp_client_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
+ //Defining parameters for Alice
+   
     TCP_CLIENT_T *state = (TCP_CLIENT_T*)arg;
     if (!p) {
         return tcp_result(arg, -1);
@@ -152,25 +168,102 @@ err_t tcp_client_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err
                                                p->tot_len > buffer_left ? buffer_left : p->tot_len, 0);
         tcp_recved(tpcb, p->tot_len);
     }
-     
-    for(int i=0; i< BUF_SIZE; i++) {
     
-    printf("%c", state->buffer[i]);
-    
-    }
-    printf("\n");
+   
+   
     pbuf_free(p);
 
+
+
+if(state->run_count < 1)
+{
+	for (int i = 0; i < 32; i++)
+    {
+        state->bob_spk_public_key[i] = state->buffer[i];
+    }
+     for(int i=0; i< 32; i++) {
+    
+    printf("%d", state->bob_spk_public_key[i]);
+    
+    } 
+     printf("\n");
+     //Verifying on Alice's side
+    ed25519_create_seed(state->alice_seed);
+    ed25519_create_keypair(state->alice_id_public_key, state-> alice_id_private_key, state-> alice_seed);
+
+    //Generate Ephemeral keys
+    ed25519_create_seed(state->alice_seed);
+    ed25519_create_keypair(state->alice_ephemeral_public_key,state-> alice_ephemeral_private_key, state->alice_seed);
+
+    for(int i=0; i< 32; i++) {
+    
+    printf("%d", state->alice_id_public_key[i]);
+    
+    }
+     printf("\n");
+    
+    
+}
     // If we have received the whole buffer, send it back to the server
-    if (state->buffer_len == BUF_SIZE) {
-        DEBUG_printf("Writing %d bytes to server\n", state->buffer_len);
-        err_t err = tcp_write(tpcb, state->buffer, state->buffer_len, TCP_WRITE_FLAG_COPY);
+    if (state->buffer_len){// == BUF_SIZE) {
+       // DEBUG_printf("Writing %d bytes to server\n", state->buffer_len);
+        //err_t err = tcp_write(tpcb, state->buffer, state->buffer_len, TCP_WRITE_FLAG_COPY);
+        
+       if (state->run_count == 0) 
+       {
+           
+           DEBUG_printf("Writing %d bytes to server\n", state->buffer_len);
+        err_t err = tcp_write(tpcb, state->alice_id_public_key, state->buffer_len,TCP_WRITE_FLAG_COPY);
+        
+         ed25519_key_exchange(state->dh1_alice, state->bob_spk_public_key, state->alice_id_private_key);
+    printf("Verifying dh1\n");
+    
+    for (int i = 0; i < 32; i++) {
+            // printf("%d\t%d\n",dh1_alice[i], dh1_bob[i]);
+           printf("%d",state-> dh1_alice[i]);
+            }
+            
+            printf("\n");
+        }
+        
+        
+        
+         if (state->run_count == 1) 
+       {
+           DEBUG_printf("Writing %d bytes to server\n", state->buffer_len);
+        err_t err = tcp_write(tpcb, state -> alice_ephemeral_public_key, state->buffer_len,TCP_WRITE_FLAG_COPY);
+        
+        for (int i = 0; i < 32; i++)
+    {
+        state->bob_id_public_key[i] = state->buffer[i];
+    }
+        
+        ed25519_key_exchange(state->dh2_alice, state->bob_id_public_key, state->alice_ephemeral_private_key);
+    printf("Verifying dh2\n");
+    
+    for (int i = 0; i < 32; i++) {
+            // printf("%d\t%d\n",dh1_alice[i], dh1_bob[i]);
+           printf("%d",state-> dh2_alice[i]);
+            }
+            
+            printf("\n");
+        }
+        
+        /* if (state->run_count == 2) 
+       {
+           DEBUG_printf("Writing %d bytes to server\n", state->buffer_len);
+        err_t err = tcp_write(tpcb,state -> spk_sig, state->buffer_len,TCP_WRITE_FLAG_COPY);
+        
+        }*/
+        
         if (err != ERR_OK) {
             DEBUG_printf("Failed to write data %d\n", err);
             return tcp_result(arg, -1);
         }
-    }
+    
     return ERR_OK;
+}
+
 }
 
 static bool tcp_client_open(void *arg) {
@@ -201,6 +294,7 @@ static bool tcp_client_open(void *arg) {
     return err == ERR_OK;
 }
 
+
 // Perform initialisation
 static TCP_CLIENT_T* tcp_client_init(void) {
     TCP_CLIENT_T *state = calloc(1, sizeof(TCP_CLIENT_T));
@@ -208,7 +302,7 @@ static TCP_CLIENT_T* tcp_client_init(void) {
         DEBUG_printf("failed to allocate state\n");
         return NULL;
     }
-    ip4addr_aton("192.168.0.101", &state->remote_addr);
+    ip4addr_aton("192.168.0.102", &state->remote_addr);
     return state;
 }
 
@@ -239,6 +333,7 @@ void run_tcp_client_test(void) {
     free(state);
 }
 
+
 int main() {
     stdio_init_all();
      for(int i = 5; i > 0; i--) {
@@ -266,3 +361,6 @@ int main() {
     cyw43_arch_deinit();
     return 0;
 }
+
+
+
